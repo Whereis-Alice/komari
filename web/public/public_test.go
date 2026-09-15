@@ -2,6 +2,7 @@ package public
 
 import (
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -135,5 +136,54 @@ func TestStaticRestrictedDoesNotServeCustomAssetOverride(t *testing.T) {
 	}
 	if strings.Contains(string(indexBody), `vite-plugin-pwa:register-sw`) {
 		t.Fatal("restricted index still registers a service worker")
+	}
+}
+
+func TestStaticAdminShellUsesDefaultThemeWithoutServiceWorkerCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Chdir(t.TempDir())
+	customDist := filepath.Join("data", "theme", "custom", "dist")
+	if err := os.MkdirAll(customDist, 0o755); err != nil {
+		t.Fatalf("create custom theme directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customDist, IndexFile), []byte("custom theme"), 0o644); err != nil {
+		t.Fatalf("write custom theme index: %v", err)
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open config db: %v", err)
+	}
+	config.SetDb(db)
+	if err := config.Set(config.ThemeKey, "custom"); err != nil {
+		t.Fatalf("set custom theme: %v", err)
+	}
+
+	router := gin.New()
+	Static(router.Group("/"), func(handlers ...gin.HandlerFunc) {
+		router.NoRoute(handlers...)
+	})
+
+	request := httptest.NewRequest("GET", "/admin", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("admin shell status = %d, want 200", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("admin shell Cache-Control = %q, want no-store", got)
+	}
+	body, err := io.ReadAll(recorder.Result().Body)
+	if err != nil {
+		t.Fatalf("read admin shell: %v", err)
+	}
+	if string(body) == "custom theme" {
+		t.Fatal("admin shell served the selected custom theme")
+	}
+	if strings.Contains(string(body), `vite-plugin-pwa:register-sw`) {
+		t.Fatal("admin shell still registers a service worker")
+	}
+	if !strings.Contains(string(body), "getRegistrations") {
+		t.Fatal("admin shell does not clean up an existing service worker")
 	}
 }

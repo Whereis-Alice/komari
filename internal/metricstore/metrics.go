@@ -8,9 +8,12 @@ const (
 	MetricGPUMemTotal    = "gpu.memory.total"
 	MetricGPUTemp        = "gpu.temperature"
 	MetricRAM            = "memory.used"
+	MetricRAMTotal       = "memory.total"
 	MetricSwap           = "swap.used"
+	MetricSwapTotal      = "swap.total"
 	MetricLoad           = "load.average"
 	MetricDisk           = "disk.used"
+	MetricDiskTotal      = "disk.total"
 	MetricNetIn          = "net.in.rate"
 	MetricNetOut         = "net.out.rate"
 	MetricNetTotalUp     = "net.total.up"
@@ -38,7 +41,11 @@ var gpuDeviceRecordMetricNames = []string{
 	MetricGPUDeviceUsage, MetricGPUMem, MetricGPUMemTotal, MetricGPUTemp,
 }
 
-var recordMetricNames = joinMetricNames(loadRecordMetricNames, gpuDeviceRecordMetricNames)
+// Capacity metrics are persisted for historical charts but are not part of the
+// legacy models.Record shape returned by the compatibility API.
+var capacityMetricNames = []string{MetricRAMTotal, MetricSwapTotal, MetricDiskTotal}
+
+var recordMetricNames = joinMetricNames(loadRecordMetricNames, gpuDeviceRecordMetricNames, capacityMetricNames)
 
 // Ping has an independent retention and cleanup boundary.
 var pingMetricNames = []string{MetricPingLatency, MetricPingLoss}

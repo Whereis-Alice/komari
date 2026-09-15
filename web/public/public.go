@@ -88,6 +88,20 @@ func stripServiceWorkerRegistration(html string) string {
 	return strings.ReplaceAll(html, `<script id="vite-plugin-pwa:register-sw" src="/registerSW.js"></script>`, "")
 }
 
+func disableServiceWorker(html string) string {
+	html = stripServiceWorkerRegistration(html)
+	cleanup := `<script>(function(){if(!('serviceWorker' in navigator)){return;}var key='komari-sw-cleanup';var reload=!!navigator.serviceWorker.controller&&!sessionStorage.getItem(key);if(reload){sessionStorage.setItem(key,'1');}navigator.serviceWorker.getRegistrations().then(function(registrations){return Promise.all(registrations.map(function(registration){return registration.unregister();}));}).then(function(){if(reload){location.reload();}else{sessionStorage.removeItem(key);}}).catch(function(){sessionStorage.removeItem(key);});})();</script>`
+	if strings.Contains(html, "</head>") {
+		return strings.Replace(html, "</head>", cleanup+"</head>", 1)
+	}
+	return cleanup + html
+}
+
+func isDefaultShellPath(requestPath string) bool {
+	return requestPath == "/admin" || strings.HasPrefix(requestPath, "/admin/") ||
+		requestPath == "/terminal" || strings.HasPrefix(requestPath, "/terminal/")
+}
+
 // isSafePath 验证路径是否在指定的基础目录内，防止路径穿透攻击
 func isSafePath(basePath, targetPath string) bool {
 	// 获取基础目录的绝对路径
@@ -207,9 +221,11 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 		shouldReplace := true
 
 		// 特殊页面：强制使用 default 主题，且不进行内容替换
-		if forceDefaultTheme || strings.HasPrefix(reqPath, "/admin") || strings.HasPrefix(reqPath, "/terminal") {
+		defaultShell := forceDefaultTheme || isDefaultShellPath(reqPath)
+		if defaultShell {
 			currentTheme = DefaultTheme
 			shouldReplace = false
+			c.Header("Cache-Control", "no-store")
 		}
 
 		// 获取 dist/index.html (相对于主题根目录)
@@ -222,8 +238,8 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 		}
 
 		htmlStr := string(content)
-		if forceDefaultTheme {
-			htmlStr = stripServiceWorkerRegistration(htmlStr)
+		if defaultShell {
+			htmlStr = disableServiceWorker(htmlStr)
 		}
 		if language, err := c.Cookie(LanguageCookieName); err == nil {
 			htmlStr = replaceHTMLLanguage(htmlStr, language)

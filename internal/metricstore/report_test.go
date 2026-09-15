@@ -212,6 +212,9 @@ func TestWriteReportStoresMinuteMetricsAndResetAwareTraffic(t *testing.T) {
 	assertMetricValues(t, s, MetricTrafficUp, report.UUID, base.Add(-time.Second), base.Add(time.Minute), []float64{0, 50, 20})
 	assertMetricValues(t, s, MetricTrafficDown, report.UUID, base.Add(-time.Second), base.Add(time.Minute), []float64{0, 60, 30})
 	assertMetricValues(t, s, MetricNetTotalUp, report.UUID, base.Add(-time.Second), base.Add(time.Minute), []float64{100, 150, 20})
+	assertMetricValues(t, s, MetricRAMTotal, report.UUID, base.Add(-time.Second), base.Add(time.Minute), []float64{1000, 1000, 1000})
+	assertMetricValues(t, s, MetricSwapTotal, report.UUID, base.Add(-time.Second), base.Add(time.Minute), []float64{200, 200, 200})
+	assertMetricValues(t, s, MetricDiskTotal, report.UUID, base.Add(-time.Second), base.Add(time.Minute), []float64{3000, 3000, 3000})
 	assertMetricAggregate(t, s, MetricTrafficUp, report.UUID, base.Add(-time.Second), base.Add(time.Minute), metric.AggSum, 70, 3)
 	assertMetricAggregate(t, s, MetricTrafficDown, report.UUID, base.Add(-time.Second), base.Add(time.Minute), metric.AggSum, 90, 3)
 
