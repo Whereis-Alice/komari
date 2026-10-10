@@ -25,17 +25,24 @@ type reportTrafficValues struct {
 	timestamp   time.Time
 	hasUp       bool
 	totalUp     int64
+	totalUpAt   time.Time
 	hasDown     bool
 	totalDown   int64
+	totalDownAt time.Time
 }
 
-var reportTrafficStates sync.Map
+var (
+	reportTrafficStates sync.Map
+	reportWriteMu       sync.Mutex
+)
 
 const (
 	reportBatchInterval     = 3 * time.Second
-	reportBatchQueueSize    = 4096
+	reportBatchQueueSize    = 512
 	pingBatchMaxRecords     = 512
 	reportBatchWriteTimeout = 10 * time.Second
+	// Longer gaps have no reliable per-bucket traffic attribution.
+	maxTrafficReportGap = 15 * time.Minute
 )
 
 var (
@@ -342,6 +349,11 @@ func writeReportBatch(ctx context.Context, reports []v2.Report) ([]v2.Report, er
 	}
 	defer storeOperations.ReleaseShared()
 
+	// Serialize baseline reads and commits, including direct writes without
+	// the background batcher.
+	reportWriteMu.Lock()
+	defer reportWriteMu.Unlock()
+
 	s := GetStore()
 	if s == nil {
 		return nil, fmt.Errorf("metric store not enabled")
@@ -361,55 +373,65 @@ func writeReportBatch(ctx context.Context, reports []v2.Report) ([]v2.Report, er
 			state.mu.Unlock()
 		}
 		if !values.initialized {
-			totalUp, hasUp, err := latestReportCounter(ctx, s, MetricNetTotalUp, report.UUID, report.UpdatedAt)
+			totalUp, hasUp, err := s.LatestBefore(ctx, MetricNetTotalUp, report.UUID, report.UpdatedAt)
 			if err != nil {
 				logger.Errorf("metricstore", "failed to restore previous upload counter for %s: %v", report.UUID, err)
 			} else {
-				values.totalUp = totalUp
+				values.totalUp = int64(totalUp.Value)
+				values.totalUpAt = totalUp.Timestamp
 				values.hasUp = hasUp
 			}
-			totalDown, hasDown, err := latestReportCounter(ctx, s, MetricNetTotalDown, report.UUID, report.UpdatedAt)
+			totalDown, hasDown, err := s.LatestBefore(ctx, MetricNetTotalDown, report.UUID, report.UpdatedAt)
 			if err != nil {
 				logger.Errorf("metricstore", "failed to restore previous download counter for %s: %v", report.UUID, err)
 			} else {
-				values.totalDown = totalDown
+				values.totalDown = int64(totalDown.Value)
+				values.totalDownAt = totalDown.Timestamp
 				values.hasDown = hasDown
 			}
 			values.initialized = true
+			// Keep only the restored baseline on failure. WriteBatch may have
+			// accepted raw samples before a rollup flush fails, so restoring
+			// again on retry could otherwise read this uncommitted batch.
+			state.mu.Lock()
+			state.reportTrafficValues = values
+			state.mu.Unlock()
 		}
 
 		if !values.timestamp.IsZero() && !report.UpdatedAt.After(values.timestamp) {
 			report.UpdatedAt = values.timestamp.Add(time.Millisecond)
 		}
 		trafficUp := int64(0)
-		if values.hasUp {
+		if values.hasUp && !values.totalUpAt.IsZero() && report.UpdatedAt.Sub(values.totalUpAt) <= maxTrafficReportGap {
 			trafficUp = TrafficCounterDelta(report.Network.TotalUp, values.totalUp)
 		}
 		trafficDown := int64(0)
-		if values.hasDown {
+		if values.hasDown && !values.totalDownAt.IsZero() && report.UpdatedAt.Sub(values.totalDownAt) <= maxTrafficReportGap {
 			trafficDown = TrafficCounterDelta(report.Network.TotalDown, values.totalDown)
 		}
 		points = append(points, reportMetricPoints(report, trafficUp, trafficDown)...)
 		values.timestamp = report.UpdatedAt
 		values.hasUp = true
 		values.totalUp = report.Network.TotalUp
+		values.totalUpAt = report.UpdatedAt
 		values.hasDown = true
 		values.totalDown = report.Network.TotalDown
+		values.totalDownAt = report.UpdatedAt
 		pendingStates[state] = values
 		prepared[i] = report
 	}
 
-	// Persist the restored per-report traffic state even if the write below
-	// fails, so a slow or failing database does not re-issue the previous-
-	// counter queries on every batch.
+	if err := s.WriteBatch(ctx, points); err != nil {
+		return nil, err
+	}
+
+	// Advance counters and timestamps only after success. Retried batches
+	// must replace the same samples, not manufacture resets or new timestamps.
 	for state, values := range pendingStates {
 		state.mu.Lock()
 		state.reportTrafficValues = values
 		state.mu.Unlock()
 	}
 
-	if err := s.WriteBatch(ctx, points); err != nil {
-		return nil, err
-	}
 	return prepared, nil
 }
